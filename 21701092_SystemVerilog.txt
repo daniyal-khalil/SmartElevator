@@ -1,0 +1,1626 @@
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: Bilkent University 
+// Engineer: Daniyal Khalil
+// 
+// Create Date: 12/20/2018 02:31:59 PM
+// Design Name: Elevator Design
+// Module Name: elevator
+// Project Name: Elevator
+// Target Devices: Basys3 and Beti Board
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+ 
+ 
+//ClockDivider module for the direction seven segment 250ms 
+module ClockDivider2(
+input clk_in,
+output clk_out
+);
+logic [24:0] count = {26{1'b0}};
+logic clk_NoBuf;
+always@ (posedge clk_in) begin
+count <= count + 1;
+end
+// you can modify 25 to have different clock rate
+assign clk_NoBuf = count[24];
+BUFG BUFG_inst (
+.I(clk_NoBuf), // 1-bit input: Clock input
+.O(clk_out) // 1-bit output: Clock output
+);
+endmodule
+
+//ClockDivider for the running code
+module ClockDivider(
+input clk_in,
+output clk_out
+);
+logic [26:0] count = {26{1'b0}};
+logic clk_NoBuf;
+always@ (posedge clk_in) begin
+count <= count + 1;
+end
+// you can modify 25 to have different clock rate
+assign clk_NoBuf = count[26];
+BUFG BUFG_inst (
+.I(clk_NoBuf), // 1-bit input: Clock input
+.O(clk_out) // 1-bit output: Clock output
+);
+endmodule
+
+
+//Elevator module
+module elevator(input logic clk_in, reset, resettimer, execute, 
+                output logic [3:0]led, led1, led2,led3,
+                //matrix  4x4 keypad
+                output [2:0] keyb_row,
+                input  [1:0] keyb_col,
+            
+                output reset_out, //shift register's reset
+                output OE,     //output enable, active low 
+                output SH_CP,  //pulse to the shift register
+                output ST_CP,  //pulse to store shift register
+                output DS,
+                output a,b,c,d,e,f,g, dp,
+                output [3:0] an,     //shift register's serial input data
+                output [7:0] col_select// active column, active high
+                 );
+                            
+                    
+                        
+                    logic [2:0] col_num;
+                    
+                    logic [0:7] [7:0] image_red = 
+                    {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                    logic [0:7] [7:0]  image_green = 
+                    {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                    logic [0:7] [7:0]  image_blue = 
+                    {8'b00000011, 8'b00000011, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+
+
+logic key_valid;
+logic [3:0]state, nextstate;
+//matrix keypad scanner
+logic [3:0] key_value;
+keypad4X4 keypad4X4_inst0(
+	.clk(clk_in),
+	.keyb_row(keyb_row), // just connect them to FPGA pins, row scanner
+	.keyb_col(keyb_col), // just connect them to FPGA pins, column scanner
+    .key_value(key_value), //user's output code for detected pressed key: row[1:0]_col[1:0]
+    .key_valid(key_valid)  // user's output valid: if the key is pressed long enough (more than 20~40 ms), key_valid becomes '1' for just one clock cycle.
+);	
+
+parameter S0 = 4'b0000;
+parameter S1 = 4'b0001;
+parameter S2 = 4'b0010;
+parameter S3 = 4'b0011;
+parameter S4 = 4'b0100;
+parameter S5 = 4'b0101;
+parameter S6 = 4'b0110;
+parameter S7 = 4'b0111;
+parameter S8 = 4'b1000;
+parameter S9 = 4'b1001;
+
+
+logic [3:0]board4_sub;
+logic [3:0]floor1, floor2, floor3, floor0;
+logic [3:0]onBoard;
+logic statecount;
+logic clk_7, clk;
+
+ClockDivider(clk_in, clk);
+ClockDivider2(clk_in, clk_7);
+logic [4:0] digit0, digit1, digit2, digit3;
+SevSeg_4digit ss(clk_in, digit0, digit1, digit2, digit3, a, b, c, d, e, f, g, dp, an);
+
+ always_ff @(posedge clk_7)
+ begin
+ if (reset | state == S0)
+         begin
+             digit3 = 10;
+         end
+   
+     if( state < nextstate & state != S3 & state != S5 & state != S7 & state != S9 & state != S1 & nextstate != S3 & nextstate != S5 & nextstate != S7 & nextstate != S9 & nextstate != S1)
+     begin
+         if ( digit3 == 10'd10 | digit3 == 10'd0 )
+         begin
+             digit3 = 16;
+         end
+         digit3 = digit3 - 1;
+     end
+     else if ( state > nextstate & state != S3 & state != S5 & state != S7 & state != S9 & state != S1 & nextstate != S3 & nextstate != S5 & nextstate != S7 & nextstate != S9 & nextstate != S1) 
+     begin
+         if ( digit3 == 10'd15 | digit3 == 10'd0 )
+         begin
+             digit3 = 9;
+         end
+         digit3 = digit3 + 1;
+     end    
+ end
+ //clock
+ always_ff @(posedge clk)
+ begin
+        if (reset | state == S0)
+        begin
+            digit0 = 0;
+            digit1 = 0;
+            digit2 = 0;
+//            in3 = 10;
+        end
+        if (resettimer)
+        begin
+            digit0 = 0;
+            digit1 = 0;
+            digit2 = 0;
+        end
+            
+        if(( state != S0 & state != S1 & (!resettimer) ))
+        begin    
+             digit0 = digit0 + 1;
+        end
+        if (digit0 == 10'd10)
+        begin
+            digit0 = 0;
+            digit1 = digit1 + 1;
+            if ( digit1 == 10'd10)
+            begin
+                digit1 = 0;
+                digit2 = digit2 + 1;
+            end
+        end        
+end 
+
+
+
+logic [3:0]meow;
+    
+always_ff @(posedge clk, posedge reset) begin
+        
+//        if (reset) state <= S0;
+//        else state <= nextstate;
+          
+
+        if (reset) state <= S0;
+        else if (state == nextstate)
+            state <= nextstate;
+        else if (state == S2 & nextstate == S1)
+            state <= nextstate;
+        else if ((state == S2 | state == S4 | state == S6 | state == S8) & (meow == 4'b0010) & (nextstate != S3 | nextstate != S5 | nextstate != S7 | nextstate != S9)) begin
+            state <= nextstate;
+            meow <= 0;
+        end
+        else if ((state == S2 | state == S4 | state == S6 | state == S8) & (nextstate == S3 | nextstate == S5 | nextstate == S7 | nextstate == S9)) begin
+                    state <= nextstate;
+                    meow <= 0;
+        end
+        else if ((state == S3 | state == S5 | state == S7 | state == S9)) begin
+            state <= nextstate;
+            meow <= 0;
+        end
+        else if (state == S0 | state == S1)
+            state <= nextstate;       
+        else
+            meow <= meow + 1;
+               
+end
+
+
+always_ff @(posedge clk_in) begin
+
+    if (reset) nextstate <= S0;
+    else
+        begin
+        
+        case (state)
+            S0: begin
+    
+                    floor1 <= 4'b0;
+                    floor2 <= 4'b0;
+                    floor3 <= 4'b0;
+                    onBoard <= 4'b0;
+                    nextstate <= S1;
+                                   
+                end         
+            S1: begin
+                     
+                     
+                   if (key_valid) begin
+                        if (key_value == 4'b1100  & floor3 < 4'b1101) begin
+                            floor3 <= floor3 + 4'b0001;
+                            nextstate <= S1;
+                        end
+                        else if (key_value == 4'b1101 & floor3 >= 4'b0) begin
+                            floor3 <= floor3 - 4'b0001;
+                            nextstate <= S1;
+                        end
+                        else if (key_value == 4'b1001& floor2 >= 4'b0) begin
+                            floor2 <= floor2 - 4'b0001;
+                            nextstate <= S1;
+                        end
+                        else if (key_value== 4'b1000 & floor2 < 4'b1101 ) begin
+                            floor2 <= floor2 + 4'b0001;
+                            nextstate <= S1;
+                        end
+                        else if (key_value == 4'b0100 & floor1 < 4'b1101) begin
+                            floor1 <= floor1 + 4'b0001;
+                            nextstate <= S1;
+                        end
+                        else if (key_value == 4'b0101& floor1 >= 4'b0) begin
+                            floor1 <= floor1 - 4'b0001;
+                            nextstate <= S1;
+                        end
+                        
+                        end
+                    if (execute)        
+                        nextstate <= S2;
+                    else
+                        nextstate <= S1;
+                end
+            S2: begin
+            
+                    if (onBoard > 4'b0000  )
+                        nextstate<= S3;
+                    else if ((floor1 > 4'b0 | floor2 > 4'b0 | floor3 > 4'b0)) begin
+   
+                        nextstate <= S4;
+                                                end
+                    else if (floor1 == 4'b0 & floor2 == 4'b0 & floor3 == 4'b0)
+                        nextstate <= S1;
+                    else begin
+                        nextstate <= S2;
+                            
+                    end
+                end
+            S3: begin
+               
+                    onBoard <= 4'b0;
+                    nextstate <= S2;
+                end
+            S4: begin
+
+                    if ((floor2 > 4'b0 | floor3 > 4'b0) & onBoard < 4'b0100)
+                        nextstate <= S6;
+                    else if ((onBoard == 4'b0100) | ((floor1 == 4'b0 & floor2 == 4'b0 & floor3 == 4'b0)))
+                        nextstate <= S2;
+                    else if (floor2 == 4'b0 & floor3 == 4'b0 & floor1 > 4'b0 & onBoard < 4'b0100)
+                        nextstate <= S5;
+                    else begin
+                        nextstate <= S4;
+                        end
+                end
+            S5: begin   
+           
+                        if ( floor1 < (4'b0100 - onBoard))
+                            begin
+                                onBoard <= onBoard + floor1;
+                                floor1 <= 4'b0;
+                            end
+                        else
+                            begin
+                                floor1 <= floor1 - ( 4'b0100 - onBoard);
+                                onBoard <= 4'b0100;
+                            end
+                        nextstate <=S4;
+                end
+            S6: begin
+                    if ((floor2 == 4'b0 & floor3 == 4'b0) | onBoard == 4'b0100)
+                        nextstate <= S4;
+                    else if (floor3 > 4'b0 & onBoard < 4'b0100)
+                        nextstate <=S8;
+                    else if (floor3 == 4'b0 & floor2 > 4'b0 & onBoard < 4'b0100)
+                        nextstate <= S7;
+                    else
+                        nextstate <= S6;
+                end
+           S7: begin
+             
+                    if (floor2 < (4'b0100 - onBoard))
+                        begin
+                            onBoard <= floor2 + onBoard;
+                            floor2 <= 0;
+                        end
+                    else
+                        begin
+                            floor2 <= floor2 - ( 4'b0100 - onBoard);
+                            onBoard <= 4'b0100;
+                        end
+                        nextstate <= S6;
+                end
+            S8: begin
+                    if (floor3 == 4'b0 | onBoard == 4'b0100)
+                        nextstate <=S6;
+                    else if (floor3 > 0 & onBoard < 4'b0100)
+                        nextstate <= S9;           
+                    else
+                        nextstate <= S8;
+                end
+            S9: begin
+                    if (floor3 < (4'b0100 - onBoard))
+                        begin
+                            onBoard <= floor3 + onBoard;
+                            floor3 <= 0;
+                        end
+                    else
+                        begin
+                            floor3 <= floor3 - (4'b0100 - onBoard);
+                            onBoard <= 4'b0100;
+                        end
+                        nextstate <= S8;
+                end
+            default: nextstate <= S0;
+        endcase 
+    end 
+
+ end
+// divide system clock (100Mhz for Basys3) by 2^N using a counter, which allows us to multiplex at lower speed
+
+assign led = state;
+assign led3 = floor2;
+assign led1 = floor3;
+assign led2 = key_value;
+always@ (posedge clk_in)
+ begin  
+        if (reset)
+        begin
+            image_blue = {8'b00000011, 8'b00000011, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+            image_red = {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+        end
+        //Ground floor
+        if ( state == S2 & onBoard == 4'b0000)
+         begin
+            image_blue = {8'b00000011, 8'b00000011, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+            //ground elevator
+            image_red[0][1] = 0;
+            image_red[1][1] = 0;
+            image_red[0][0] = 0;
+            image_red[1][0] = 0;
+            // first floor elevator
+            image_red[0][3] = 0;
+            image_red[1][3] = 0;
+            image_red[0][2] = 0;
+            image_red[1][2] = 0;
+            // second floor elevator
+            image_red[0][5] = 0;
+            image_red[1][5] = 0;
+            image_red[0][4] = 0;
+            image_red[1][4] = 0;
+            // third floor elevator
+            image_red[0][7] = 0;
+            image_red[1][7] = 0;
+            image_red[0][6] = 0;
+            image_red[1][6] = 0;
+         end   
+          if ( state == S2 & onBoard == 4'b0001)
+               begin
+                  image_blue = {8'b00000001, 8'b00000011, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                  //ground elevator
+                  image_red[0][1] = 1;
+                  image_red[1][1] = 0;
+                  image_red[0][0] = 0;
+                  image_red[1][0] = 0;
+                  // first floor elevator
+                  image_red[0][3] = 0;
+                  image_red[1][3] = 0;
+                  image_red[0][2] = 0;
+                  image_red[1][2] = 0;
+                  // second floor elevator
+                  image_red[0][5] = 0;
+                  image_red[1][5] = 0;
+                  image_red[0][4] = 0;
+                  image_red[1][4] = 0;
+                  // third floor elevator
+                  image_red[0][7] = 0;
+                  image_red[1][7] = 0;
+                  image_red[0][6] = 0;
+                  image_red[1][6] = 0;
+               end
+           if ( state == S2 & onBoard == 4'b0010)
+                begin
+                   image_blue = {8'b00000001, 8'b00000001, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                   //ground elevator
+                   image_red[0][1] = 1;
+                   image_red[1][1] = 1;
+                   image_red[0][0] = 0;
+                   image_red[1][0] = 0;
+                   // first floor elevator
+                   image_red[0][3] = 0;
+                   image_red[1][3] = 0;
+                   image_red[0][2] = 0;
+                   image_red[1][2] = 0;
+                   // second floor elevator
+                   image_red[0][5] = 0;
+                   image_red[1][5] = 0;
+                   image_red[0][4] = 0;
+                   image_red[1][4] = 0;
+                   // third floor elevator
+                   image_red[0][7] = 0;
+                   image_red[1][7] = 0;
+                   image_red[0][6] = 0;
+                   image_red[1][6] = 0;
+                end
+          if ( state == S2 & onBoard == 4'b0011)
+                 begin
+                     image_blue = {8'b00000000, 8'b00000001, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                     //ground elevator
+                      image_red[0][1] = 1;
+                      image_red[1][1] = 1;
+                      image_red[0][0] = 1;
+                      image_red[1][0] = 0;
+                      // first floor elevator
+                      image_red[0][3] = 0;
+                      image_red[1][3] = 0;
+                      image_red[0][2] = 0;
+                      image_red[1][2] = 0;
+                      // second floor elevator
+                      image_red[0][5] = 0;
+                      image_red[1][5] = 0;
+                      image_red[0][4] = 0;
+                      image_red[1][4] = 0;
+                      // third floor elevator
+                      image_red[0][7] = 0;
+                      image_red[1][7] = 0;
+                      image_red[0][6] = 0;
+                      image_red[1][6] = 0;
+                 end
+          if ( state == S2 & onBoard == 4'b0100)
+                begin
+                    image_blue = {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                    //ground elevator
+                     image_red[0][1] = 1;
+                     image_red[1][1] = 1;
+                     image_red[0][0] = 1;
+                     image_red[1][0] = 1;
+                     // first floor elevator
+                     image_red[0][3] = 0;
+                     image_red[1][3] = 0;
+                     image_red[0][2] = 0;
+                     image_red[1][2] = 0;
+                     // second floor elevator
+                     image_red[0][5] = 0;
+                     image_red[1][5] = 0;
+                     image_red[0][4] = 0;
+                     image_red[1][4] = 0;
+                     // third floor elevator
+                     image_red[0][7] = 0;
+                     image_red[1][7] = 0;
+                     image_red[0][6] = 0;
+                     image_red[1][6] = 0;
+                end
+          // Floor 1
+          if ( state == S4 & onBoard == 4'b0000)
+                begin
+                  image_blue = {8'b00001100, 8'b00001100, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                  //ground elevator
+                   image_red[0][1] = 0;
+                   image_red[1][1] = 0;
+                   image_red[0][0] = 0;
+                   image_red[1][0] = 0;
+                   // first floor elevator
+                   image_red[0][3] = 0;
+                   image_red[1][3] = 0;
+                   image_red[0][2] = 0;
+                   image_red[1][2] = 0;
+                   // second floor elevator
+                   image_red[0][5] = 0;
+                   image_red[1][5] = 0;
+                   image_red[0][4] = 0;
+                   image_red[1][4] = 0;
+                   // third floor elevator
+                   image_red[0][7] = 0;
+                   image_red[1][7] = 0;
+                   image_red[0][6] = 0;
+                   image_red[1][6] = 0;
+                end 
+          if ( state == S4 & onBoard == 4'b0001)
+               begin
+                  image_blue = {8'b00000100, 8'b00001100, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                  //ground elevator
+                 image_red[0][1] = 0;
+                 image_red[1][1] = 0;
+                 image_red[0][0] = 0;
+                 image_red[1][0] = 0;
+                 // first floor elevator
+                 image_red[0][3] = 1;
+                 image_red[1][3] = 0;
+                 image_red[0][2] = 0;
+                 image_red[1][2] = 0;
+                 // second floor elevator
+                 image_red[0][5] = 0;
+                 image_red[1][5] = 0;
+                 image_red[0][4] = 0;
+                 image_red[1][4] = 0;
+                 // third floor elevator
+                 image_red[0][7] = 0;
+                 image_red[1][7] = 0;
+                 image_red[0][6] = 0;
+                 image_red[1][6] = 0;
+               end
+          if ( state == S4 & onBoard == 4'b0010)
+               begin
+                 image_blue = {8'b00000100, 8'b00000100, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                 //ground elevator
+                  image_red[0][1] = 0;
+                  image_red[1][1] = 0;
+                  image_red[0][0] = 0;
+                  image_red[1][0] = 0;
+                  // first floor elevator
+                  image_red[0][3] = 1;
+                  image_red[1][3] = 1;
+                  image_red[0][2] = 0;
+                  image_red[1][2] = 0;
+                  // second floor elevator
+                  image_red[0][5] = 0;
+                  image_red[1][5] = 0;
+                  image_red[0][4] = 0;
+                  image_red[1][4] = 0;
+                  // third floor elevator
+                  image_red[0][7] = 0;
+                  image_red[1][7] = 0;
+                  image_red[0][6] = 0;
+                  image_red[1][6] = 0;
+               end
+         if ( state == S4 & onBoard == 4'b0011)
+                 begin
+                    image_blue = {8'b00000000, 8'b00000100, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                     //ground elevator
+                     image_red[0][1] = 0;
+                     image_red[1][1] = 0;
+                     image_red[0][0] = 0;
+                     image_red[1][0] = 0;
+                     // first floor elevator
+                     image_red[0][3] = 1;
+                     image_red[1][3] = 1;
+                     image_red[0][2] = 1;
+                     image_red[1][2] = 0;
+                     // second floor elevator
+                     image_red[0][5] = 0;
+                     image_red[1][5] = 0;
+                     image_red[0][4] = 0;
+                     image_red[1][4] = 0;
+                     // third floor elevator
+                     image_red[0][7] = 0;
+                     image_red[1][7] = 0;
+                     image_red[0][6] = 0;
+                     image_red[1][6] = 0;
+                 end
+          if ( state == S4 & onBoard == 4'b0100)
+                  begin
+                     image_blue = {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                      //ground elevator
+                      image_red[0][1] = 0;
+                      image_red[1][1] = 0;
+                      image_red[0][0] = 0;
+                      image_red[1][0] = 0;
+                      // first floor elevator
+                      image_red[0][3] = 1;
+                      image_red[1][3] = 1;
+                      image_red[0][2] = 1;
+                      image_red[1][2] = 1;
+                      // second floor elevator
+                      image_red[0][5] = 0;
+                      image_red[1][5] = 0;
+                      image_red[0][4] = 0;
+                      image_red[1][4] = 0;
+                      // third floor elevator
+                      image_red[0][7] = 0;
+                      image_red[1][7] = 0;
+                      image_red[0][6] = 0;
+                      image_red[1][6] = 0;
+                  end
+                  
+          // Floor 2
+          if ( state == S6 & onBoard == 4'b0000)
+                begin
+                   image_blue = {8'b00110000, 8'b00110000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                   //ground elevator
+                     image_red[0][1] = 0;
+                     image_red[1][1] = 0;
+                     image_red[0][0] = 0;
+                     image_red[1][0] = 0;
+                     // first floor elevator
+                     image_red[0][3] = 0;
+                     image_red[1][3] = 0;
+                     image_red[0][2] = 0;
+                     image_red[1][2] = 0;
+                     // second floor elevator
+                     image_red[0][5] = 0;
+                     image_red[1][5] = 0;
+                     image_red[0][4] = 0;
+                     image_red[1][4] = 0;
+                     // third floor elevator
+                     image_red[0][7] = 0;
+                     image_red[1][7] = 0;
+                     image_red[0][6] = 0;
+                     image_red[1][6] = 0;
+                end
+          if ( state == S6 & onBoard == 4'b0001)
+              begin
+                 image_blue = {8'b00010000, 8'b00110000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                 //ground elevator
+                  image_red[0][1] = 0;
+                  image_red[1][1] = 0;
+                  image_red[0][0] = 0;
+                  image_red[1][0] = 0;
+                  // first floor elevator
+                  image_red[0][3] = 0;
+                  image_red[1][3] = 0;
+                  image_red[0][2] = 0;
+                  image_red[1][2] = 0;
+                  // second floor elevator
+                  image_red[0][5] = 1;
+                  image_red[1][5] = 0;
+                  image_red[0][4] = 0;
+                  image_red[1][4] = 0;
+                  // third floor elevator
+                  image_red[0][7] = 0;
+                  image_red[1][7] = 0;
+                  image_red[0][6] = 0;
+                  image_red[1][6] = 0;
+              end
+           if ( state == S6 & onBoard == 4'b0010)
+                    begin
+                       image_blue = {8'b00010000, 8'b00010000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                   //ground elevator
+                     image_red[0][1] = 0;
+                     image_red[1][1] = 0;
+                     image_red[0][0] = 0;
+                     image_red[1][0] = 0;
+                     // first floor elevator
+                     image_red[0][3] = 0;
+                     image_red[1][3] = 0;
+                     image_red[0][2] = 0;
+                     image_red[1][2] = 0;
+                     // second floor elevator
+                     image_red[0][5] = 1;
+                     image_red[1][5] = 1;
+                     image_red[0][4] = 0;
+                     image_red[1][4] = 0;
+                     // third floor elevator
+                     image_red[0][7] = 0;
+                     image_red[1][7] = 0;
+                     image_red[0][6] = 0;
+                     image_red[1][6] = 0;
+                    end
+         if ( state == S6 & onBoard == 4'b0011)
+              begin
+                 image_blue = {8'b00000000, 8'b00010000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                 //ground elevator
+                  image_red[0][1] = 0;
+                  image_red[1][1] = 0;
+                  image_red[0][0] = 0;
+                  image_red[1][0] = 0;
+                  // first floor elevator
+                  image_red[0][3] = 0;
+                  image_red[1][3] = 0;
+                  image_red[0][2] = 0;
+                  image_red[1][2] = 0;
+                  // second floor elevator
+                  image_red[0][5] = 1;
+                  image_red[1][5] = 1;
+                  image_red[0][4] = 1;
+                  image_red[1][4] = 0;
+                  // third floor elevator
+                  image_red[0][7] = 0;
+                  image_red[1][7] = 0;
+                  image_red[0][6] = 0;
+                  image_red[1][6] = 0;
+              end
+          if ( state == S6 & onBoard == 4'b0100)
+                begin
+                   image_blue = {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                   //ground elevator
+                     image_red[0][1] = 0;
+                     image_red[1][1] = 0;
+                     image_red[0][0] = 0;
+                     image_red[1][0] = 0;
+                     // first floor elevator
+                     image_red[0][3] = 0;
+                     image_red[1][3] = 0;
+                     image_red[0][2] = 0;
+                     image_red[1][2] = 0;
+                     // second floor elevator
+                     image_red[0][5] = 1;
+                     image_red[1][5] = 1;
+                     image_red[0][4] = 1;
+                     image_red[1][4] = 1;
+                     // third floor elevator
+                     image_red[0][7] = 0;
+                     image_red[1][7] = 0;
+                     image_red[0][6] = 0;
+                     image_red[1][6] = 0;
+                end    
+         // Floor 3
+          if ( state == S8 & onBoard == 4'b0000)
+               begin
+                  image_blue = {8'b11000000, 8'b11000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                  //ground elevator
+                   image_red[0][1] = 0;
+                   image_red[1][1] = 0;
+                   image_red[0][0] = 0;
+                   image_red[1][0] = 0;
+                   // first floor elevator
+                   image_red[0][3] = 0;
+                   image_red[1][3] = 0;
+                   image_red[0][2] = 0;
+                   image_red[1][2] = 0;
+                   // second floor elevator
+                   image_red[0][5] = 0;
+                   image_red[1][5] = 0;
+                   image_red[0][4] = 0;
+                   image_red[1][4] = 0;
+                   // third floor elevator
+                   image_red[0][7] = 0;
+                   image_red[1][7] = 0;
+                   image_red[0][6] = 0;
+                   image_red[1][6] = 0;
+               end 
+          if ( state == S8 & onBoard == 4'b0001)
+             begin
+                image_blue = {8'b01000000, 8'b11000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+               //ground elevator
+               image_red[0][1] = 0;
+               image_red[1][1] = 0;
+               image_red[0][0] = 0;
+               image_red[1][0] = 0;
+               // first floor elevator
+               image_red[0][3] = 0;
+               image_red[1][3] = 0;
+               image_red[0][2] = 0;
+               image_red[1][2] = 0;
+               // second floor elevator
+               image_red[0][5] = 0;
+               image_red[1][5] = 0;
+               image_red[0][4] = 0;
+               image_red[1][4] = 0;
+               // third floor elevator
+               image_red[0][7] = 1;
+               image_red[1][7] = 0;
+               image_red[0][6] = 0;
+               image_red[1][6] = 0;
+             end 
+         if ( state == S8 & onBoard == 4'b0010)
+               begin
+                  image_blue = {8'b01000000, 8'b01000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                  //ground elevator
+                 image_red[0][1] = 0;
+                 image_red[1][1] = 0;
+                 image_red[0][0] = 0;
+                 image_red[1][0] = 0;
+                 // first floor elevator
+                 image_red[0][3] = 0;
+                 image_red[1][3] = 0;
+                 image_red[0][2] = 0;
+                 image_red[1][2] = 0;
+                 // second floor elevator
+                 image_red[0][5] = 0;
+                 image_red[1][5] = 0;
+                 image_red[0][4] = 0;
+                 image_red[1][4] = 0;
+                 // third floor elevator
+                 image_red[0][7] = 1;
+                 image_red[1][7] = 1;
+                 image_red[0][6] = 0;
+                 image_red[1][6] = 0;
+               end 
+         if ( state == S8 & onBoard == 4'b0011)
+             begin
+                image_blue = {8'b00000000, 8'b01000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                 //ground elevator
+                image_red[0][1] = 0;
+                image_red[1][1] = 0;
+                image_red[0][0] = 0;
+                image_red[1][0] = 0;
+                // first floor elevator
+                image_red[0][3] = 0;
+                image_red[1][3] = 0;
+                image_red[0][2] = 0;
+                image_red[1][2] = 0;
+                // second floor elevator
+                image_red[0][5] = 0;
+                image_red[1][5] = 0;
+                image_red[0][4] = 0;
+                image_red[1][4] = 0;
+                // third floor elevator
+                image_red[0][7] = 1;
+                image_red[1][7] = 1;
+                image_red[0][6] = 1;
+                image_red[1][6] = 0;
+             end 
+         if ( state == S8 & onBoard == 4'b0100)
+               begin
+                  image_blue = {8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000, 8'b00000000};
+                   //ground elevator
+                 image_red[0][1] = 0;
+                 image_red[1][1] = 0;
+                 image_red[0][0] = 0;
+                 image_red[1][0] = 0;
+                 // first floor elevator
+                 image_red[0][3] = 0;
+                 image_red[1][3] = 0;
+                 image_red[0][2] = 0;
+                 image_red[1][2] = 0;
+                 // second floor elevator
+                 image_red[0][5] = 0;
+                 image_red[1][5] = 0;
+                 image_red[0][4] = 0;
+                 image_red[1][4] = 0;
+                 // third floor elevator
+                 image_red[0][7] = 1;
+                 image_red[1][7] = 1;
+                 image_red[0][6] = 1;
+                 image_red[1][6] = 1;
+               end        
+        
+        //floor 2
+           if ( floor2 == 4'b0000)
+            begin
+               image_red[2][5] = 0;
+               image_red[2][4] = 0;
+               image_red[3][5] = 0;
+               image_red[3][4] = 0;
+               image_red[4][5] = 0;
+               image_red[4][4] = 0;
+               image_red[5][5] = 0;
+               image_red[5][4] = 0;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+             end
+           if ( floor2 == 4'b0001)
+           begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 0;
+               image_red[3][5] = 0;
+               image_red[3][4] = 0;
+               image_red[4][5] = 0;
+               image_red[4][4] = 0;
+               image_red[5][5] = 0;
+               image_red[5][4] = 0;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+           end
+           if ( floor2 == 4'b0010)
+            begin
+                image_red[2][5] = 1;
+                image_red[2][4] = 1;
+                image_red[3][5] = 0;
+                image_red[3][4] = 0;
+                image_red[4][5] = 0;
+                image_red[4][4] = 0;
+                image_red[5][5] = 0;
+                image_red[5][4] = 0;
+                image_red[6][5] = 0;
+                image_red[6][4] = 0;
+                image_red[7][5] = 0;
+                image_red[7][4] = 0;    
+            end
+           if ( floor2 == 4'b0011)
+            begin
+                image_red[2][5] = 1;
+                image_red[2][4] = 1;
+                image_red[3][5] = 1;
+                image_red[3][4] = 0;
+                image_red[4][5] = 0;
+                image_red[4][4] = 0;
+                image_red[5][5] = 0;
+                image_red[5][4] = 0;
+                image_red[6][5] = 0;
+                image_red[6][4] = 0;
+                image_red[7][5] = 0;
+                image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b0100)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 0;
+               image_red[4][4] = 0;
+               image_red[5][5] = 0;
+               image_red[5][4] = 0;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b0101)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 0;
+               image_red[5][5] = 0;
+               image_red[5][4] = 0;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end                
+           if ( floor2 == 4'b0110)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 1;
+               image_red[5][5] = 0;
+               image_red[5][4] = 0;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b0111)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 1;
+               image_red[5][5] = 1;
+               image_red[5][4] = 0;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b1000)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 1;
+               image_red[5][5] = 1;
+               image_red[5][4] = 1;
+               image_red[6][5] = 0;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b1001)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 1;
+               image_red[5][5] = 1;
+               image_red[5][4] = 1;
+               image_red[6][5] = 1;
+               image_red[6][4] = 0;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b1010)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 1;
+               image_red[5][5] = 1;
+               image_red[5][4] = 1;
+               image_red[6][5] = 1;
+               image_red[6][4] = 1;
+               image_red[7][5] = 0;
+               image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b1011)
+            begin
+                image_red[2][5] = 1;
+                image_red[2][4] = 1;
+                image_red[3][5] = 1;
+                image_red[3][4] = 1;
+                image_red[4][5] = 1;
+                image_red[4][4] = 1;
+                image_red[5][5] = 1;
+                image_red[5][4] = 1;
+                image_red[6][5] = 1;
+                image_red[6][4] = 1;
+                image_red[7][5] = 1;
+                image_red[7][4] = 0;
+            end
+           if ( floor2 == 4'b1100)
+            begin
+               image_red[2][5] = 1;
+               image_red[2][4] = 1;
+               image_red[3][5] = 1;
+               image_red[3][4] = 1;
+               image_red[4][5] = 1;
+               image_red[4][4] = 1;
+               image_red[5][5] = 1;
+               image_red[5][4] = 1;
+               image_red[6][5] = 1;
+               image_red[6][4] = 1;
+               image_red[7][5] = 1;
+               image_red[7][4] = 1;
+            end
+            
+        //floor 1                    
+               if ( floor1 == 4'b0000)  
+                begin                    
+                   image_red[2][3] = 0;  
+                   image_red[2][2] = 0;  
+                   image_red[3][3] = 0;  
+                   image_red[3][2] = 0;  
+                   image_red[4][3] = 0;  
+                   image_red[4][2] = 0;  
+                   image_red[5][3] = 0;  
+                   image_red[5][2] = 0;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                 end                     
+               if ( floor1 == 4'b0001)  
+               begin                     
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 0;  
+                   image_red[3][3] = 0;  
+                   image_red[3][2] = 0;  
+                   image_red[4][3] = 0;  
+                   image_red[4][2] = 0;  
+                   image_red[5][3] = 0;  
+                   image_red[5][2] = 0;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+               end                       
+               if ( floor1 == 4'b0010)  
+                begin                    
+                    image_red[2][3] = 1; 
+                    image_red[2][2] = 1; 
+                    image_red[3][3] = 0; 
+                    image_red[3][2] = 0; 
+                    image_red[4][3] = 0; 
+                    image_red[4][2] = 0; 
+                    image_red[5][3] = 0; 
+                    image_red[5][2] = 0; 
+                    image_red[6][3] = 0; 
+                    image_red[6][2] = 0; 
+                    image_red[7][3] = 0; 
+                    image_red[7][2] = 0; 
+                end                      
+               if ( floor1 == 4'b0011)  
+                begin                    
+                    image_red[2][3] = 1; 
+                    image_red[2][2] = 1; 
+                    image_red[3][3] = 1; 
+                    image_red[3][2] = 0; 
+                    image_red[4][3] = 0; 
+                    image_red[4][2] = 0; 
+                    image_red[5][3] = 0; 
+                    image_red[5][2] = 0; 
+                    image_red[6][3] = 0; 
+                    image_red[6][2] = 0; 
+                    image_red[7][3] = 0; 
+                    image_red[7][2] = 0; 
+                end                      
+               if ( floor1 == 4'b0100)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 0;  
+                   image_red[4][2] = 0;  
+                   image_red[5][3] = 0;  
+                   image_red[5][2] = 0;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b0101)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 0;  
+                   image_red[5][3] = 0;  
+                   image_red[5][2] = 0;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b0110)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 1;  
+                   image_red[5][3] = 0;  
+                   image_red[5][2] = 0;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b0111)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 1;  
+                   image_red[5][3] = 1;  
+                   image_red[5][2] = 0;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b1000)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 1;  
+                   image_red[5][3] = 1;  
+                   image_red[5][2] = 1;  
+                   image_red[6][3] = 0;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b1001)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 1;  
+                   image_red[5][3] = 1;  
+                   image_red[5][2] = 1;  
+                   image_red[6][3] = 1;  
+                   image_red[6][2] = 0;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b1010)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 1;  
+                   image_red[5][3] = 1;  
+                   image_red[5][2] = 1;  
+                   image_red[6][3] = 1;  
+                   image_red[6][2] = 1;  
+                   image_red[7][3] = 0;  
+                   image_red[7][2] = 0;  
+                end                      
+               if ( floor1 == 4'b1011)  
+                begin                    
+                    image_red[2][3] = 1; 
+                    image_red[2][2] = 1; 
+                    image_red[3][3] = 1; 
+                    image_red[3][2] = 1; 
+                    image_red[4][3] = 1; 
+                    image_red[4][2] = 1; 
+                    image_red[5][3] = 1; 
+                    image_red[5][2] = 1; 
+                    image_red[6][3] = 1; 
+                    image_red[6][2] = 1; 
+                    image_red[7][3] = 1; 
+                    image_red[7][2] = 0; 
+                end                      
+               if ( floor1 == 4'b1100)  
+                begin                    
+                   image_red[2][3] = 1;  
+                   image_red[2][2] = 1;  
+                   image_red[3][3] = 1;  
+                   image_red[3][2] = 1;  
+                   image_red[4][3] = 1;  
+                   image_red[4][2] = 1;  
+                   image_red[5][3] = 1;  
+                   image_red[5][2] = 1;  
+                   image_red[6][3] = 1;  
+                   image_red[6][2] = 1;  
+                   image_red[7][3] = 1;  
+                   image_red[7][2] = 1;  
+                end                                      
+        //floor 3
+        if ( floor3 == 4'b0000)
+         begin
+            image_red[2][7] = 0;
+            image_red[2][6] = 0;
+            image_red[3][7] = 0;
+            image_red[3][6] = 0;
+            image_red[4][7] = 0;
+            image_red[4][6] = 0;
+            image_red[5][7] = 0;
+            image_red[5][6] = 0;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+          end
+        if ( floor3 == 4'b0001)
+        begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 0;
+            image_red[3][7] = 0;
+            image_red[3][6] = 0;
+            image_red[4][7] = 0;
+            image_red[4][6] = 0;
+            image_red[5][7] = 0;
+            image_red[5][6] = 0;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+        end
+        if ( floor3 == 4'b0010)
+         begin
+             image_red[2][7] = 1;
+             image_red[2][6] = 1;
+             image_red[3][7] = 0;
+             image_red[3][6] = 0;
+             image_red[4][7] = 0;
+             image_red[4][6] = 0;
+             image_red[5][7] = 0;
+             image_red[5][6] = 0;
+             image_red[6][7] = 0;
+             image_red[6][6] = 0;
+             image_red[7][7] = 0;
+             image_red[7][6] = 0;    
+         end
+        if ( floor3 == 4'b0011)
+         begin
+             image_red[2][7] = 1;
+             image_red[2][6] = 1;
+             image_red[3][7] = 1;
+             image_red[3][6] = 0;
+             image_red[4][7] = 0;
+             image_red[4][6] = 0;
+             image_red[5][7] = 0;
+             image_red[5][6] = 0;
+             image_red[6][7] = 0;
+             image_red[6][6] = 0;
+             image_red[7][7] = 0;
+             image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b0100)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 0;
+            image_red[4][6] = 0;
+            image_red[5][7] = 0;
+            image_red[5][6] = 0;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b0101)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 0;
+            image_red[5][7] = 0;
+            image_red[5][6] = 0;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end                
+        if ( floor3 == 4'b0110)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 1;
+            image_red[5][7] = 0;
+            image_red[5][6] = 0;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b0111)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 1;
+            image_red[5][7] = 1;
+            image_red[5][6] = 0;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b1000)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 1;
+            image_red[5][7] = 1;
+            image_red[5][6] = 1;
+            image_red[6][7] = 0;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b1001)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 1;
+            image_red[5][7] = 1;
+            image_red[5][6] = 1;
+            image_red[6][7] = 1;
+            image_red[6][6] = 0;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b1010)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 1;
+            image_red[5][7] = 1;
+            image_red[5][6] = 1;
+            image_red[6][7] = 1;
+            image_red[6][6] = 1;
+            image_red[7][7] = 0;
+            image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b1011)
+         begin
+             image_red[2][7] = 1;
+             image_red[2][6] = 1;
+             image_red[3][7] = 1;
+             image_red[3][6] = 1;
+             image_red[4][7] = 1;
+             image_red[4][6] = 1;
+             image_red[5][7] = 1;
+             image_red[5][6] = 1;
+             image_red[6][7] = 1;
+             image_red[6][6] = 1;
+             image_red[7][7] = 1;
+             image_red[7][6] = 0;
+         end
+        if ( floor3 == 4'b1100)
+         begin
+            image_red[2][7] = 1;
+            image_red[2][6] = 1;
+            image_red[3][7] = 1;
+            image_red[3][6] = 1;
+            image_red[4][7] = 1;
+            image_red[4][6] = 1;
+            image_red[5][7] = 1;
+            image_red[5][6] = 1;
+            image_red[6][7] = 1;
+            image_red[6][6] = 1;
+            image_red[7][7] = 1;
+            image_red[7][6] = 1;
+         end
+
+end
+ 
+// This module displays 8x8 image on LED display module. 
+display_8x8 display_8x8_0(
+	.clk(clk_in),
+	
+	// RGB data for display current column
+	.red_vect_in(image_red[col_num]),
+	.green_vect_in(image_green[col_num]),
+	.blue_vect_in(image_blue[col_num]),
+	
+	.col_data_capture(), // unused
+	.col_num(col_num),
+	
+	// FPGA pins for display
+	.reset_out(reset_out),
+	.OE(OE),
+	.SH_CP(SH_CP),
+	.ST_CP(ST_CP),
+	.DS(DS),
+	.col_select(col_select)   
+);
+endmodule
+
+
+#-------------------- 7 segment display ---------------------
+#------------------------------------------------------------
+set_property PACKAGE_PIN W7 [get_ports {a}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {a}] 
+set_property PACKAGE_PIN W6 [get_ports {b}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {b}] 
+set_property PACKAGE_PIN U8 [get_ports {c}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {c}] 
+set_property PACKAGE_PIN V8 [get_ports {d}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {d}] 
+set_property PACKAGE_PIN U5 [get_ports {e}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {e}] 
+set_property PACKAGE_PIN V5 [get_ports {f}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {f}] 
+set_property PACKAGE_PIN U7 [get_ports {g}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {g}] 
+set_property PACKAGE_PIN V7 [get_ports dp]  	 	 	 	  
+ 	set_property IOSTANDARD LVCMOS33 [get_ports dp] 
+	
+set_property PACKAGE_PIN U2 [get_ports {an[0]}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {an[0]}] 
+set_property PACKAGE_PIN U4 [get_ports {an[1]}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {an[1]}] 
+set_property PACKAGE_PIN V4 [get_ports {an[2]}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {an[2]}] 
+set_property PACKAGE_PIN W4 [get_ports {an[3]}] 	 	 	 	 	 
+ 	set_property IOSTANDARD LVCMOS33 [get_ports {an[3]}]
+
+
+
+
+
+
+
+set_property PACKAGE_PIN U16 [get_ports {led[0]}]          
+  set_property IOSTANDARD LVCMOS33 [get_ports {led[0]}] 
+set_property PACKAGE_PIN E19 [get_ports {led[1]}]          
+  set_property IOSTANDARD LVCMOS33 [get_ports {led[1]}] 
+set_property PACKAGE_PIN U19 [get_ports {led[2]}]          
+  set_property IOSTANDARD LVCMOS33 [get_ports {led[2]}]
+set_property PACKAGE_PIN V19 [get_ports {led[3]}]          
+    set_property IOSTANDARD LVCMOS33 [get_ports {led[3]}]
+set_property PACKAGE_PIN V13 [get_ports {led1[0]}]  	 	 	 	 
+         set_property IOSTANDARD LVCMOS33 [get_ports {led1[0]}] 
+    set_property PACKAGE_PIN V3 [get_ports {led1[1]}]                          
+         set_property IOSTANDARD LVCMOS33 [get_ports {led1[1]}] 
+    set_property PACKAGE_PIN W3 [get_ports {led1[2]}]                      
+         set_property IOSTANDARD LVCMOS33 [get_ports {led1[2]}] 
+    set_property PACKAGE_PIN U3 [get_ports {led1[3]}]                      
+         set_property IOSTANDARD LVCMOS33 [get_ports {led1[3]}] 
+    set_property PACKAGE_PIN P3 [get_ports {led2[0]}]                      
+         set_property IOSTANDARD LVCMOS33 [get_ports {led2[0]}] 
+    set_property PACKAGE_PIN N3 [get_ports {led2[1]}]                      
+         set_property IOSTANDARD LVCMOS33 [get_ports {led2[1]}] 
+    set_property PACKAGE_PIN P1 [get_ports {led2[2]}]                      
+         set_property IOSTANDARD LVCMOS33 [get_ports {led2[2]}] 
+    set_property PACKAGE_PIN L1 [get_ports {led2[3]}]                                   
+        set_property IOSTANDARD LVCMOS33 [get_ports {led2[3]}]
+    
+         set_property PACKAGE_PIN T18 [get_ports execute]						
+             set_property IOSTANDARD LVCMOS33 [get_ports execute]
+             
+                      set_property PACKAGE_PIN U18 [get_ports resettimer]                        
+                          set_property IOSTANDARD LVCMOS33 [get_ports resettimer]
+
+                 set_property PACKAGE_PIN U17 [get_ports reset]						
+                     set_property IOSTANDARD LVCMOS33 [get_ports reset]
+         
+set_property PACKAGE_PIN W5 [get_ports clk_in]
+         set_property IOSTANDARD LVCMOS33 [get_ports clk_in]
+         create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports clk_in]
+         
+         #Pmod Header JA 
+                  ##Sch name = JA1 
+                  set_property PACKAGE_PIN J1 [get_ports {keyb_row[0]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_row[0]}] 
+                  ##Sch name = JA2 
+                  set_property PACKAGE_PIN L2 [get_ports {keyb_row[1]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_row[1]}] 
+                  ##Sch name = JA3 
+                  set_property PACKAGE_PIN J2 [get_ports {keyb_row[2]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_row[2]}] 
+                  #Sch name = JA4 
+                  set_property PACKAGE_PIN G2 [get_ports {keyb_row[3]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_row[3]}] 
+                  #Sch name = JA7 
+                  set_property PACKAGE_PIN H1 [get_ports {keyb_col[0]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_col[0]}] 
+                  ##Sch name = JA8 
+                  set_property PACKAGE_PIN K2 [get_ports {keyb_col[1]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_col[1]}] 
+                  ##Sch name = JA9 
+                  set_property PACKAGE_PIN H2 [get_ports {keyb_col[0]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_col[0]}] 
+                  ##Sch name = JA10 
+                  set_property PACKAGE_PIN G3 [get_ports {keyb_col[1]}]                          
+                       set_property IOSTANDARD LVCMOS33 [get_ports {keyb_col[1]}]
+                       
+                       set_property PACKAGE_PIN W18 [get_ports {led3[0]}]					
+                           set_property IOSTANDARD LVCMOS33 [get_ports {led3[0]}]
+                       set_property PACKAGE_PIN U15 [get_ports {led3[1]}]                    
+                           set_property IOSTANDARD LVCMOS33 [get_ports {led3[1]}]
+                       set_property PACKAGE_PIN U14 [get_ports {led3[2]}]                    
+                           set_property IOSTANDARD LVCMOS33 [get_ports {led3[2]}]
+                       set_property PACKAGE_PIN V14 [get_ports {led3[3]}]                    
+                           set_property IOSTANDARD LVCMOS33 [get_ports {led3[3]}]
+
+
+                          
+                          
+                          #------------------------------------------------------------
+                          #---------------------- Display Connector--------------------
+                          #------------------------------------------------------------
+                          set_property PACKAGE_PIN L17 [get_ports reset_out]
+                          set_property IOSTANDARD LVCMOS33 [get_ports reset_out]
+                          
+                          set_property PACKAGE_PIN M18 [get_ports OE]
+                          set_property IOSTANDARD LVCMOS33 [get_ports OE]
+                          
+                          set_property PACKAGE_PIN P18 [get_ports SH_CP]
+                          set_property IOSTANDARD LVCMOS33 [get_ports SH_CP]
+                          
+                          set_property PACKAGE_PIN N17 [get_ports ST_CP]
+                          set_property IOSTANDARD LVCMOS33 [get_ports ST_CP]
+                          
+                          set_property PACKAGE_PIN K17 [get_ports DS]
+                          set_property IOSTANDARD LVCMOS33 [get_ports DS]
+                          
+                          set_property PACKAGE_PIN A14 [get_ports {col_select[0]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[0]}]
+                          
+                          set_property PACKAGE_PIN A16 [get_ports {col_select[1]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[1]}]
+                          
+                          set_property PACKAGE_PIN B15 [get_ports {col_select[2]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[2]}]
+                          
+                          set_property PACKAGE_PIN B16 [get_ports {col_select[3]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[3]}]
+                          
+                          set_property PACKAGE_PIN A15 [get_ports {col_select[4]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[4]}]
+                          
+                          set_property PACKAGE_PIN A17 [get_ports {col_select[5]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[5]}]
+                          
+                          set_property PACKAGE_PIN C15 [get_ports {col_select[6]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[6]}]
+                          
+                          set_property PACKAGE_PIN C16 [get_ports {col_select[7]}]
+                          set_property IOSTANDARD LVCMOS33 [get_ports {col_select[7]}]
